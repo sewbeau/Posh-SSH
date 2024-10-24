@@ -14,14 +14,14 @@ Gets the items and child items in a specified path.
 
 ### Index (Default)
 ```
-Get-SFTPChildItem [-SessionId] <Int32[]> [[-Path] <String>] [-Recurse] [-Directory] [-File]
- [<CommonParameters>]
+Get-SFTPChildItem [-SessionId] <Int32[]> [[-Path] <String>] [-Recurse] [-Directory] [-File] [-Name <String>]
+ [-ProgressAction <ActionPreference>] [<CommonParameters>]
 ```
 
 ### Session
 ```
 Get-SFTPChildItem [-SFTPSession] <SftpSession[]> [[-Path] <String>] [-Recurse] [-Directory] [-File]
- [<CommonParameters>]
+ [-Name <String>] [-ProgressAction <ActionPreference>] [<CommonParameters>]
 ```
 
 ## DESCRIPTION
@@ -112,7 +112,7 @@ Required: False
 Position: 1
 Default value: None
 Accept pipeline input: False
-Accept wildcard characters: False
+Accept wildcard characters: True
 ```
 
 ### -Recurse
@@ -171,6 +171,36 @@ Aliases:
 Required: False
 Position: Named
 Default value: False
+Accept pipeline input: False
+Accept wildcard characters: False
+```
+
+### -Name
+Name of File or Directory to filter results on.
+
+```yaml
+Type: String
+Parameter Sets: (All)
+Aliases:
+
+Required: False
+Position: Named
+Default value: False
+Accept pipeline input: False
+Accept wildcard characters: True
+```
+
+### -ProgressAction
+{{ Fill ProgressAction Description }}
+
+```yaml
+Type: ActionPreference
+Parameter Sets: (All)
+Aliases: proga
+
+Required: False
+Position: Named
+Default value: None
 Accept pipeline input: False
 Accept wildcard characters: False
 ```

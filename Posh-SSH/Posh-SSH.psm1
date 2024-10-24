@@ -1087,7 +1087,6 @@ function Get-SFTPChildItem
         [Alias('Index')]
         [Int32[]]
         $SessionId,
-
         [Parameter(Mandatory=$true,
                    ParameterSetName = 'Session',
                    ValueFromPipeline=$true,
@@ -1095,11 +1094,10 @@ function Get-SFTPChildItem
         [Alias('Session')]
         [SSH.SFTPSession[]]
         $SFTPSession,
-
         [Parameter(Mandatory=$false,
                    Position=1)]
         [string]
-        $Path,
+        $Path = "",
         [Parameter(Mandatory=$false,
                    Position=2)]
         [Alias('Recursive')]
@@ -1113,38 +1111,51 @@ function Get-SFTPChildItem
                    Position=4)]
         [switch]
         $File
-
      )
-
      Begin
      {
-
-        function Get-SFTPDirectoryRecursive
+        function Get-SFTPItems
         {
-            param($Path,$SFTPSession)
-
-            $Sess.Session.ListDirectory($Path) | ForEach-Object {
-                if ($File -and $Directory)
-                {
-                    # Item cannot be a file AND a directory
-                }
-                elseif ((!$File -and !$Directory) -or ($File -and !$_.IsDirectory) -or ($Directory -and $_.IsDirectory))
-                {
-                    if (@('.','..') -notcontains $_.Name)
-                    {
-                        # Item to keep
-                        $_
-                    }
-                }
-                if ($Recurse)
-                {
-                    if ($_.IsDirectory -eq $true -and @('.','..') -notcontains $_.Name)
-                    {
-                        Get-SFTPDirectoryRecursive -Path $_.FullName -SFTPSession $sess
+            param($CurrentPath, $SFTPSession, [bool]$IsRecursive)
+            
+            try {
+                Write-Verbose "Listing items in path: $CurrentPath"
+                $items = $SFTPSession.Session.ListDirectory($CurrentPath)
+                
+                foreach ($item in $items) {
+                    if (@('.','..') -notcontains $item.Name) {
+                        if ((!$File -and !$Directory) -or ($File -and !$item.IsDirectory) -or ($Directory -and $item.IsDirectory))
+                        {
+                            $item
+                        }
+                        
+                        if ($IsRecursive -and $item.IsDirectory) {
+                            $subPath = if ($CurrentPath -eq '/') { "/$($item.Name)" } else { "$CurrentPath/$($item.Name)" }
+                            Get-SFTPItems -CurrentPath $subPath -SFTPSession $SFTPSession -IsRecursive $true
+                        }
                     }
                 }
             }
+            catch {
+                Write-Error "Error listing items in $($CurrentPath): $_"
+            }
+        }
 
+        function Split-SFTPPath
+        {
+            param([string]$Path)
+            
+            if ($Path -eq '/') {
+                return @('/', '')
+            }
+            
+            if ($Path -match '^(.*)/([^/]+)$') {
+                $parentPath = if ($Matches[1] -eq '') { '/' } else { $Matches[1] }
+                return @($parentPath, $Matches[2])
+            }
+            else {
+                return @('/', $Path)
+            }
         }
 
         $ToProcess = @()
@@ -1154,7 +1165,6 @@ function Get-SFTPChildItem
             {
                 $ToProcess = $SFTPSession
             }
-
             'Index'
             {
                 foreach($session in $Global:SFTPSessions)
@@ -1167,29 +1177,38 @@ function Get-SFTPChildItem
             }
         }
      }
-
      Process
      {
         foreach($Sess in $ToProcess)
         {
-            if ($Path.Length -eq 0)
-            {
+            if ($Path -eq "") {
                 $Path = $Sess.Session.WorkingDirectory
             }
-            else
-            {
-                $Attribs = Get-SFTPPathAttribute -SFTPSession $Sess -Path $Path
-                if (!$Attribs.IsDirectory)
-                {
-                    throw "Specified path of $($Path) is not a directory."
+
+            # Handle wildcards
+            if ($Path -like "*[*?]*") {
+                $pathParts = Split-SFTPPath -Path $Path
+                $parentPath = $pathParts[0]
+                $leafPattern = $pathParts[1]
+                
+                $items = Get-SFTPItems -CurrentPath $parentPath -SFTPSession $Sess -IsRecursive $false
+                $items | Where-Object { $_.Name -like $leafPattern } | ForEach-Object {
+                    if ($_.IsDirectory) {
+                        $dirPath = if ($parentPath -eq '/') { "/$($_.Name)" } else { "$parentPath/$($_.Name)" }
+                        Get-SFTPItems -CurrentPath $dirPath -SFTPSession $Sess -IsRecursive $Recurse
+                    } else {
+                        $_
+                    }
                 }
             }
-            Get-SFTPDirectoryRecursive -Path $Path -SFTPSession $Sess
+            else {
+                # Regular path (including root)
+                Get-SFTPItems -CurrentPath $Path -SFTPSession $Sess -IsRecursive $Recurse
+            }
         }
      }
      End{}
 }
-
 
 # .ExternalHelp Posh-SSH.psm1-Help.xml
 function Test-SFTPPath
@@ -1336,7 +1355,8 @@ function Remove-SFTPItem
             }
             else
             {
-                throw "Specified path of $($Path) does not exist."
+                Write-Error -Message "Specified path of $($Path) does not exist." -Exception (New-Object System.IO.FileNotFoundException) -CategoryActivity "Remove-SFTPItem" 
+
             }
 
         }
@@ -1347,7 +1367,7 @@ function Remove-SFTPItem
 # .ExternalHelp Posh-SSH.psm1-Help.xml
 function Move-SFTPItem
 {
-    [CmdletBinding(DefaultParameterSetName='Index')]
+    [CmdletBinding(DefaultParameterSetName='Index', SupportsShouldProcess=$true)]
     param(
         [Parameter(Mandatory=$true,
                    ParameterSetName = 'Index',
@@ -1375,8 +1395,11 @@ function Move-SFTPItem
         [Parameter(Mandatory=$true,
                    Position=2)]
         [string]
-        $Destination
+        $Destination,
 
+        [Parameter(Mandatory=$false)]
+        [switch]
+        $Force
      )
 
      Begin
@@ -1403,26 +1426,43 @@ function Move-SFTPItem
      }
      Process
      {
-
         foreach($session in $ToProcess)
         {
-
             if (Test-SFTPPath -SFTPSession $session -Path $Path)
             {
-                $itemInfo = $session.Session.Get($path)
-                Write-Verbose("Moving $($path) to $($Destination).")
-                $itemInfo.MoveTo($Destination)
+                $itemInfo = $session.Session.Get($Path)
+                
+                # Check if destination exists
+                if ($session.Session.Exists($Destination))
+                {
+                    if ($Force)
+                    {
+                        if ($PSCmdlet.ShouldProcess($Destination, "Delete existing file"))
+                        {
+                            Write-Verbose "Destination file exists. Deleting $Destination"
+                            $session.Session.DeleteFile($Destination)
+                        }
+                    }
+                    else
+                    {
+                        throw "Destination file $Destination already exists. Use -Force to overwrite."
+                    }
+                }
+
+                if ($PSCmdlet.ShouldProcess($Path, "Move to $Destination"))
+                {
+                    Write-Verbose "Moving $Path to $Destination"
+                    $itemInfo.MoveTo($Destination)
+                }
             }
             else
             {
-                throw "Specified path of $($Path) does not exist."
+                throw "Specified path of $Path does not exist."
             }
-
         }
      }
      End{}
 }
-
 
 # .ExternalHelp Posh-SSH.psm1-Help.xml
 function Set-SFTPLocation
